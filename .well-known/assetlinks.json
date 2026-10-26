@@ -1,0 +1,8 @@
+[{
+      "relation": ["delegate_permission/common.handle_all_urls"],
+      "target": {
+        "namespace": "android_app",
+        "package_name": "com.vivek.five_cards.twa",
+        "sha256_cert_fingerprints": ["09:EE:6A:1A:2C:ED:AE:7E:63:DC:4A:5A:A8:50:EE:B8:B4:70:B1:76:3E:44:A6:E2:81:80:41:CE:0B:F3:AA:EE"]
+      }
+    }]
