@@ -16,7 +16,8 @@ require(path.join(ROOT, 'room.js'));
 // (server.js, package.json, ...) stays private.
 const PUBLIC_FILES = new Set([
   'index.html', 'style.css', 'config.js', 'engine.js', 'bot.js', 'room.js', 'audio.js', 'net.js',
-  'voice.js', 'stats.js', 'ui.js'
+  'voice.js', 'stats.js', 'ui.js', 'sw.js', 'manifest.webmanifest',
+  'icon-192.png', 'icon-512.png', 'icon-maskable-512.png'
 ]);
 const FC = globalThis.FC;
 
@@ -111,6 +112,15 @@ function start(port, opts) {
       return res.end(JSON.stringify({ ok: true, rooms: rooms.size, uptime: Math.round((Date.now() - startedAt) / 1000) }));
     }
     if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405, { Allow: 'GET, HEAD' }); return res.end(); }
+    // Lets the Android app (made with PWABuilder) prove it belongs to this site, which removes the browser bar.
+    // Put the JSON from PWABuilder in a file named assetlinks.json next to server.js, or in the ASSETLINKS_JSON variable.
+    if (url.pathname === '/.well-known/assetlinks.json') {
+      let body = process.env.ASSETLINKS_JSON;
+      if (!body) { try { body = fs.readFileSync(path.join(ROOT, 'assetlinks.json'), 'utf8'); } catch (e) {} }
+      if (!body) { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); return res.end('Not found'); }
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'Access-Control-Allow-Origin': '*' });
+      return res.end(req.method === 'HEAD' ? undefined : body);
+    }
     let rel;
     try { rel = decodeURIComponent(url.pathname); } catch (e) { res.writeHead(400); return res.end(); }
     if (rel === '/' || rel === '') rel = '/index.html';
@@ -125,7 +135,7 @@ function start(port, opts) {
       const headers = {
         'Content-Type': MIME[ext] || 'application/octet-stream',
         'Content-Length': st.size,
-        'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=300',
+        'Cache-Control': (ext === '.html' || name === 'sw.js' || name === 'manifest.webmanifest') ? 'no-cache' : 'public, max-age=300',
         'X-Content-Type-Options': 'nosniff',
         'Referrer-Policy': 'no-referrer',
         'Permissions-Policy': 'microphone=(self), camera=(), geolocation=()'

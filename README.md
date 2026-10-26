@@ -14,6 +14,8 @@ All files live at the top level of the repo (no folders).
 | `render.yaml` | Optional Render Blueprint (auto-fills the settings) |
 | `index.html`, `style.css` | The page |
 | `ui.js`, `net.js`, `audio.js`, `voice.js`, `stats.js`, `config.js` | Browser code |
+| `manifest.webmanifest`, `sw.js`, `icon-192.png`, `icon-512.png`, `icon-maskable-512.png` | Makes the site an installable app (PWA) |
+| `assetlinks.json` | *You add this* after PWABuilder makes your Android app (see below) |
 | `engine.js`, `bot.js`, `room.js` | Rules, bots, rooms (used by both server and browser) |
 | `.gitignore` | Optional |
 
@@ -65,6 +67,18 @@ The tokens stay on the server. Players only receive short-lived credentials.
 The home page has a **Statistics** button. Every finished game (practice or online) is saved on your device:
 games played, wins, losses, win/loss ratio, a win-rate donut and a win-rate trend line.
 A win means you finished with the lowest score. Statistics are stored in your browser, so they do not follow you to another device or survive clearing site data.
+
+## Install as an app / make an Android APK
+
+The site is an installable PWA, so in Chrome you can use ⋮ → *Install app*. To share a real APK file:
+
+1. Open https://www.pwabuilder.com, paste your `onrender.com` address and press **Start**. The manifest, service worker and security checks should be green.
+2. Press **Package For Stores → Android** and keep the defaults, with a **New** signing key. Set a Package ID such as `com.yourname.fivecards`.
+3. Download the zip. It contains your APK, your signing key (keep it safe: you need it for every future update) and `signing-key-info.txt` with the SHA-256 fingerprint. It also contains an `assetlinks.json`.
+4. Upload that `assetlinks.json` to the **top level of this repo** (or paste its text into a Render environment variable named `ASSETLINKS_JSON`). It is then served at `/.well-known/assetlinks.json`. This removes the browser address bar from the app.
+5. Send the APK to Android users. They tap it and allow *Install unknown apps* when asked.
+
+Game updates need no new APK, because the app opens your live site. Rebuild the APK only if you change the icons, name or colors in `manifest.webmanifest`.
 
 ## Free plan notes
 
