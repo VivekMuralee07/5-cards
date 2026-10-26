@@ -1,0 +1,16 @@
+{
+  "name": "five-cards",
+  "version": "2.0.0",
+  "private": true,
+  "description": "5 Cards: a multiplayer card game with bots. Node + WebSocket server.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
