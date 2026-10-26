@@ -15,10 +15,12 @@ require(path.join(ROOT, 'room.js'));
 // Only these files are ever sent to browsers. Everything else in the repo
 // (server.js, package.json, ...) stays private.
 const PUBLIC_FILES = new Set([
-  'index.html', 'style.css', 'config.js', 'engine.js', 'bot.js', 'room.js', 'audio.js', 'net.js', 'ui.js'
+  'index.html', 'style.css', 'config.js', 'engine.js', 'bot.js', 'room.js', 'audio.js', 'net.js',
+  'voice.js', 'stats.js', 'ui.js'
 ]);
 const FC = globalThis.FC;
 
+const crypto = require('crypto');
 const MAX_ROOMS = 300;
 const MAX_SOCKETS = 1500;
 const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
@@ -35,9 +37,64 @@ const CSP = [
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src https://fonts.gstatic.com",
   "img-src 'self' data:",
+  "media-src 'self' blob:",
   "connect-src 'self' ws: wss:",
   "base-uri 'none'", "form-action 'none'", "frame-ancestors 'none'"
 ].join('; ');
+
+// ---------- ICE servers for voice chat ----------
+// STUN lets most players connect directly. A TURN relay is what makes voice work between ANY two
+// networks (mobile carriers, offices, strict routers). Configure one with environment variables:
+//   Cloudflare:  CLOUDFLARE_TURN_KEY_ID + CLOUDFLARE_TURN_API_TOKEN   (credentials are minted automatically)
+//   Any server:  TURN_URLS (comma separated) + TURN_USERNAME + TURN_CREDENTIAL
+//   coturn:      TURN_URLS + TURN_SECRET   (time-limited credentials from a shared secret)
+const STUN = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
+let iceCache = { until: 0, servers: STUN };
+let iceWarned = false;
+
+async function loadIceServers() {
+  const env = process.env;
+  try {
+    if (env.CLOUDFLARE_TURN_KEY_ID && env.CLOUDFLARE_TURN_API_TOKEN) {
+      const ttl = 86400;
+      const res = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(env.CLOUDFLARE_TURN_KEY_ID)}/credentials/generate-ice-servers`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${env.CLOUDFLARE_TURN_API_TOKEN}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ttl })
+      });
+      if (!res.ok) throw new Error('Cloudflare TURN answered HTTP ' + res.status);
+      const data = await res.json();
+      let list = Array.isArray(data.iceServers) ? data.iceServers : data.iceServers ? [data.iceServers] : [];
+      // Browsers cannot use port 53, and waiting for it to time out only slows connections down.
+      list = list.map(s => Object.assign({}, s, { urls: [].concat(s.urls).filter(u => !/:53(\?|$)/.test(u)) })).filter(s => s.urls.length);
+      if (!list.length) throw new Error('Cloudflare TURN returned no servers');
+      return { servers: list, ttl: ttl * 1000 * 0.8 };
+    }
+    if (env.TURN_URLS) {
+      const urls = env.TURN_URLS.split(',').map(u => u.trim()).filter(Boolean);
+      if (env.TURN_SECRET) {
+        const ttl = 86400;
+        const username = String(Math.floor(Date.now() / 1000) + ttl);
+        const credential = crypto.createHmac('sha1', env.TURN_SECRET).update(username).digest('base64');
+        return { servers: STUN.concat([{ urls, username, credential }]), ttl: ttl * 1000 * 0.8 };
+      }
+      if (env.TURN_USERNAME && env.TURN_CREDENTIAL) {
+        return { servers: STUN.concat([{ urls, username: env.TURN_USERNAME, credential: env.TURN_CREDENTIAL }]), ttl: 3600 * 1000 };
+      }
+    }
+  } catch (e) {
+    if (!iceWarned) { iceWarned = true; console.error('TURN setup failed, falling back to STUN only:', e.message); }
+    return { servers: STUN, ttl: 60 * 1000 };
+  }
+  return { servers: STUN, ttl: 3600 * 1000 };
+}
+
+async function getIceServers() {
+  if (Date.now() < iceCache.until) return iceCache.servers;
+  const r = await loadIceServers();
+  iceCache = { until: Date.now() + r.ttl, servers: r.servers };
+  return r.servers;
+}
 
 function start(port, opts) {
   opts = opts || {};
@@ -70,7 +127,8 @@ function start(port, opts) {
         'Content-Length': st.size,
         'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=300',
         'X-Content-Type-Options': 'nosniff',
-        'Referrer-Policy': 'no-referrer'
+        'Referrer-Policy': 'no-referrer',
+        'Permissions-Policy': 'microphone=(self), camera=(), geolocation=()'
       };
       if (ext === '.html') headers['Content-Security-Policy'] = CSP;
       res.writeHead(200, headers);
@@ -82,7 +140,7 @@ function start(port, opts) {
   const server = http.createServer(serveStatic);
 
   // ---------- websockets ----------
-  const wss = new WebSocketServer({ noServer: true, maxPayload: 4096 });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 16384 });
 
   function originAllowed(req) {
     const origin = req.headers.origin;
@@ -118,12 +176,12 @@ function start(port, opts) {
       close(reason) { try { ws.close(1000, String(reason || '').slice(0, 100)); } catch (e) {} }
     };
     let room = null, pid = null;
-    let tokens = 30, last = Date.now(), strikes = 0;
+    let tokens = 150, last = Date.now(), strikes = 0;
 
-    ws.on('message', raw => {
-      // Simple token bucket: ~15 messages per second sustained, bursts of 30.
+    ws.on('message', async raw => {
+      // Token bucket: ~30 messages per second sustained, bursts of 150 (voice setup sends a burst of ICE candidates).
       const now = Date.now();
-      tokens = Math.min(30, tokens + ((now - last) / 1000) * 15); last = now;
+      tokens = Math.min(150, tokens + ((now - last) / 1000) * 30); last = now;
       if (tokens < 1) { if (++strikes > 100) ws.terminate(); return; }
       tokens -= 1;
 
@@ -149,7 +207,9 @@ function start(port, opts) {
             pid = r.join(msg, conn);
             room = r;
           } else return;
-          conn.send({ t: 'welcome', id: pid, code: room.code });
+          let ice = STUN;
+          try { ice = await getIceServers(); } catch (e) {}
+          conn.send({ t: 'welcome', id: pid, code: room.code, ice });
           room.broadcast();
           return;
         }

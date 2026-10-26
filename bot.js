@@ -9,17 +9,18 @@
   const PROFILES = {
     easy:   { noise: 3.0, pairBonus: 0.0, sizeBonus: 0.3, bias: 0, threshold: 0.50, mc: 120, revealCost: 0 },
     medium: { noise: 1.0, pairBonus: 0.4, sizeBonus: 0.8, bias: 1, threshold: 0.68, mc: 250, revealCost: 0.3 },
-    hard:   { noise: 0.0, pairBonus: 0.6, sizeBonus: 1.0, bias: 0, threshold: 0.60, mc: 400, revealCost: 0.6 }
+    hard:   { noise: 0.0, pairBonus: 0.6, sizeBonus: 1.0, bias: 0, threshold: 0.55, mc: 400, revealCost: 0.6 }
   };
 
-  // Probability that `total` is strictly lower than every opponent's hand.
-  function winProbability(total, opps, pool, bias, samples) {
-    if (!pool.length) return 0.5;
-    let wins = 0;
+  // Simulates opponents' unknown cards. Returns the chance that calling SHOOK with `total`
+  // wins (strictly lowest), ties (best opponent equal, nobody lower) or is caught (someone lower).
+  function outcomeOdds(total, opps, pool, bias, samples) {
+    if (!pool.length) return { win: 0.5, tie: 0, lose: 0.5 };
+    let win = 0, tie = 0;
     const work = pool.slice();
     for (let s = 0; s < samples; s++) {
       FC.shuffle(work);
-      let ptr = 0, ok = true;
+      let ptr = 0, lower = false, equal = false;
       for (const o of opps) {
         let sum = o.knownSum;
         if (o.unknown > 0) {
@@ -28,11 +29,13 @@
           ptr += take;
           for (let i = 0; i < Math.min(o.unknown, drawn.length); i++) sum += drawn[i];
         }
-        if (sum <= total) { ok = false; break; }
+        if (sum < total) { lower = true; break; }
+        if (sum === total) equal = true;
       }
-      if (ok) wins++;
+      if (lower) continue;
+      if (equal) tie++; else win++;
     }
-    return wins / samples;
+    return { win: win / samples, tie: tie / samples, lose: 1 - (win + tie) / samples };
   }
 
   function decide(E, pi) {
@@ -59,7 +62,8 @@
     // ---- SHOOK? ----
     const laps = Math.floor(E.turnCount / n);
     const bias = me.difficulty === 'hard' ? Math.min(3, prof.bias + Math.floor(laps / 2)) : prof.bias;
-    const p = winProbability(T, opps, pool, bias, prof.mc);
+    const odds = outcomeOdds(T, opps, pool, bias, prof.mc);
+    const p = odds.win + 0.7 * odds.tie;      // a tie scores your own total, so it is nearly as good as winning
     let threshold = prof.threshold;
     if (me.difficulty === 'hard') {
       if (me.score + E.penalty >= E.limit) threshold += 0.12;   // a failed call would knock me out
@@ -96,5 +100,5 @@
   }
 
   const NAMES = ['Robo Ravi', 'Chip', 'Pixel Priya', 'Bolt', 'Nova', 'Turbo Tara', 'Zippy', 'Byte Bhai', 'Echo', 'Sparky'];
-  FC.Bot = { decide, NAMES, winProbability };
+  FC.Bot = { decide, NAMES, outcomeOdds };
 })(typeof window !== 'undefined' ? window : globalThis);

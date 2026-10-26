@@ -91,6 +91,7 @@
       const p = this.player(pid);
       if (!p) return;
       p.connected = false;
+      p.voice = false;
       if (E.phase === 'lobby') {
         const t = setTimeout(() => {
           this.graceTimers.delete(pid);
@@ -119,7 +120,7 @@
       if (E.phase === 'lobby') {
         this.dropPlayer(pid);
       } else {
-        p.connected = false; p.isBot = true; p.takeover = true; p.key = null; p.difficulty = 'medium';
+        p.connected = false; p.voice = false; p.isBot = true; p.takeover = true; p.key = null; p.difficulty = 'medium';
         this.log(`${p.name} left, so a bot is playing for them.`);
       }
       this.fixHost();
@@ -145,6 +146,20 @@
         case 'play': return E.play(pid, msg.cards, msg.source === 'discard' ? 'discard' : 'deck');
         case 'shook': return E.shook(pid);
         case 'leave': return this.leave(pid);
+        case 'voice': {
+          const me = this.player(pid), on = !!msg.on;
+          if (this.local || !me || !!me.voice === on) return;
+          me.voice = on;
+          return this.broadcast();
+        }
+        case 'rtc': {
+          // Voice chat signaling: relay a WebRTC offer/answer/candidate to one other player in this room.
+          const me = this.player(pid), to = this.player(msg.to), target = this.conns.get(msg.to);
+          if (this.local || !me || !to || !target || msg.to === pid || !me.voice || !to.voice) return;
+          if (!msg.data || typeof msg.data !== 'object' || JSON.stringify(msg.data).length > 12000) return;
+          try { target.send({ t: 'rtc', from: pid, data: msg.data }); } catch (e) {}
+          return;
+        }
         case 'emote':
           if (!EMOTES.includes(msg.e)) return;
           this.emote = { seq: (this.emote ? this.emote.seq : 0) + 1, id: pid, e: msg.e };

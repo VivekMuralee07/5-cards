@@ -36,10 +36,28 @@
   const app = $('#app');
 
   // ---------- building blocks ----------
-  function avatarHTML(i, cls) {
+  function avatarHTML(i, cls, pid) {
     const a = AVATARS[(i | 0) % AVATARS.length] || AVATARS[0];
-    return `<span class="av ${cls || ''}" style="--av:${a[1]}" aria-hidden="true">${a[0]}</span>`;
+    return `<span class="av ${cls || ''}" style="--av:${a[1]}" ${pid ? `data-pid="${esc(pid)}"` : ''} aria-hidden="true">${a[0]}</span>`;
   }
+  const MIC = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>';
+  const micIcon = off => MIC + (off ? '<path d="M4 4l16 16"/>' : '') + '</svg>';
+  const voiceState = () => (!FC.Voice.on ? 'off' : FC.Voice.muted ? 'muted' : 'live');
+  const voiceLabel = st => (st === 'off' ? 'Join voice chat' : st === 'muted' ? 'Unmute microphone' : 'Mute microphone');
+  function voiceBtn(v) {
+    if (v.local) return '';
+    const st = voiceState();
+    return `<button class="iconbtn voice ${st}" data-act="voice" aria-label="${voiceLabel(st)}" title="${voiceLabel(st)}">${micIcon(st !== 'live')}</button>`;
+  }
+  function updateVoiceUI() {
+    const st = voiceState();
+    document.querySelectorAll('[data-act="voice"]').forEach(b => {
+      b.className = 'iconbtn voice ' + st;
+      b.innerHTML = micIcon(st !== 'live');
+      b.setAttribute('aria-label', voiceLabel(st)); b.title = voiceLabel(st);
+    });
+  }
+  FC.Voice.onChange = updateVoiceUI;
   const isRed = c => (c.r === 'JK' ? c.s === 'R' : c.s === '♥' || c.s === '♦');
   const COURT = { J: '♞', Q: '♛', K: '♚' };
   function cardHTML(c, cls, attrs) {
@@ -97,7 +115,10 @@
             <button class="btn" data-act="join">Join</button>
           </div>
         </div>
-        <button class="link" data-act="rules">How to play</button>
+        <div class="linkrow">
+          <button class="link" data-act="stats">Statistics</button>
+          <button class="link" data-act="rules">How to play</button>
+        </div>
       </section>
     </main>`;
     if (prefillCode) $('#name').focus();
@@ -120,7 +141,7 @@
       code = autoCode || ($('#code').value || '').toUpperCase().trim();
       if (!code) { toast('Type the room code you were sent.', 'bad'); $('#code').focus(); return; }
     }
-    const opts = { me: meInfo, onView, onError: onSessionError, onStatus: m => toast(m) };
+    const opts = { me: meInfo, onView, onError: onSessionError, onStatus: m => toast(m), onSignal: (from, data) => FC.Voice.signal(from, data) };
     const session = kind === 'solo'
       ? new FC.Net.Local(opts)
       : new FC.Net.Remote(Object.assign(opts, { mode: kind, code }));
@@ -157,11 +178,13 @@
   function onSessionError(msg, soft) {
     if (soft) { toast(msg, 'bad'); return; }
     sstore.set('session', null);
+    FC.Voice.leave();
     S.modal = { type: 'gone', msg };
     if (S.view) render(S.view); else { renderHome(); toast(msg, 'bad'); }
   }
 
   function leave() {
+    FC.Voice.leave();
     if (S.session) {
       const v = S.view;
       if (v && !v.local && (v.phase === 'playing' || v.phase === 'roundEnd') &&
@@ -190,8 +213,8 @@
               ${['easy', 'medium', 'hard'].map(l => `<option value="${l}" ${p.difficulty === l ? 'selected' : ''}>${l[0].toUpperCase() + l.slice(1)} bot</option>`).join('')}
             </select>` : `<span class="tagpill">${p.difficulty} bot</span>`)
         : '';
-      seats.push(`<li class="seat-row">${avatarHTML(p.avatar)}
-        <span class="nm">${esc(p.name)} ${tags.map(t => `<span class="tagpill">${t}</span>`).join('')}</span>
+      seats.push(`<li class="seat-row">${avatarHTML(p.avatar, '', p.id)}
+        <span class="nm">${esc(p.name)} ${tags.map(t => `<span class="tagpill">${t}</span>`).join('')}${p.voice ? '<span class="vbadge" title="In voice chat">🎙</span>' : ''}</span>
         ${level}
         ${host && p.id !== v.myId ? `<button class="x" data-act="remove" data-id="${p.id}" aria-label="Remove ${esc(p.name)}">✕</button>` : ''}
       </li>`);
@@ -222,29 +245,27 @@
   function topbar(v, inGame) {
     return `<nav class="topbar">
       <button class="iconbtn" data-act="leave" aria-label="Leave">✕</button>
-      ${inGame ? `<span class="roundpill">Round ${v.round}</span>` : '<span></span>'}
+      ${inGame ? `<span class="roundpill">Round ${v.round}</span>` : ''}
       <span class="spacer"></span>
-      ${!v.local && v.code ? `<button class="codepill" data-act="copy" aria-label="Copy invite link">Room ${v.code}</button>` : ''}
-      ${inGame ? `<button class="iconbtn" data-act="scores" aria-label="Scoreboard">📊</button>
-                  <button class="iconbtn" data-act="log" aria-label="Game log">📜</button>` : ''}
-      <button class="iconbtn" data-act="rules" aria-label="Rules">?</button>
-      <button class="iconbtn" data-act="mute" aria-label="${Sound.muted ? 'Unmute' : 'Mute'}">${Sound.muted ? '🔇' : '🔊'}</button>
+      ${!v.local && v.code ? `<button class="codepill" data-act="copy" aria-label="Room ${v.code}. Copy invite link">${v.code}</button>` : ''}
+      ${voiceBtn(v)}
+      ${inGame ? '<button class="iconbtn" data-act="scores" aria-label="Scoreboard">📊</button>' : ''}
+      <button class="iconbtn" data-act="menu" aria-label="Menu">☰</button>
     </nav>`;
   }
 
   // ---------- table ----------
   function seatHTML(p, i, v) {
     const active = v.phase === 'playing' && v.turn === i;
-    const knownIds = new Set(p.known.map(c => c.id));
-    const minis = p.known.map(c => cardHTML(c, 'mini')).join('') +
-      Array.from({ length: Math.max(0, p.handCount - knownIds.size) }, () => cardHTML(null, 'mini')).join('');
-    return `<div class="seat ${active ? 'active' : ''} ${p.connected ? '' : 'offline'}" data-pid="${p.id}">
-      <div class="seat-av">${avatarHTML(p.avatar, 'lg')}
+    // Opponents' cards are never shown: only how many they hold, face down.
+    const minis = Array.from({ length: p.handCount }, () => cardHTML(null, 'mini')).join('');
+    return `<div class="seat ${active ? 'active' : ''} ${p.connected ? '' : 'offline'}" data-pid="${esc(p.id)}">
+      <div class="seat-av">${avatarHTML(p.avatar, 'lg', p.id)}
         ${active ? '<span class="thinking"><i></i><i></i><i></i></span>' : ''}
         <span class="bubble" hidden></span></div>
-      <div class="seat-name">${esc(p.name)}${p.isBot ? ` <span class="bot">${p.takeover ? 'auto' : 'bot'}</span>` : ''}</div>
+      <div class="seat-name">${esc(p.name)}${p.isBot ? ` <span class="bot">${p.takeover ? 'auto' : 'bot'}</span>` : ''}${p.voice ? ' <span class="vbadge" title="In voice chat">🎙</span>' : ''}</div>
       <div class="seat-score" title="Score">${p.score}<small>/${v.limit}</small></div>
-      <div class="minis">${minis}</div>
+      <div class="minis" aria-label="${p.handCount} cards, face down">${minis}</div>
     </div>`;
   }
 
@@ -288,7 +309,7 @@
       </section>
       <section class="mine ${myTurn ? 'myturn' : ''}">
         <div class="me-info">
-          ${avatarHTML(mine.avatar)}
+          ${avatarHTML(mine.avatar, '', v.myId)}
           <span class="nm">${esc(mine.name)}</span>
           <span class="stat">Score <b>${mine.score}</b></span>
           <span class="stat">Hand <b>${total}</b></span>
@@ -318,10 +339,18 @@
       inner = `<div class="sheet"><h2>Room closed</h2><p>${esc(m.msg)}</p><button class="btn primary" data-act="home">Back to home</button></div>`;
     } else if (m && m.type === 'confirm') {
       inner = `<div class="sheet small"><h2>Call SHOOK?</h2>
-        <p>Your hand is worth <b>${FC.handTotal(v.hand)}</b>. If anyone has the same or less, you take ${v.penalty} points.</p>
+        <p>Your hand is worth <b>${FC.handTotal(v.hand)}</b>. If anyone has less, you take ${v.penalty} points. If someone has exactly the same, you add your ${FC.handTotal(v.hand)}. If you are lowest, you add 0.</p>
         <div class="row"><button class="btn" data-act="close">Keep playing</button><button class="btn danger" data-act="shook-yes">Call SHOOK</button></div></div>`;
     } else if (m && m.type === 'rules') {
       inner = rulesHTML();
+    } else if (m && m.type === 'menu' && v) {
+      inner = `<div class="sheet small menu"><h2>Menu</h2>
+        ${v.phase !== 'lobby' ? '<button class="btn" data-act="log">Game log</button>' : ''}
+        <button class="btn" data-act="rules">How to play</button>
+        <button class="btn" data-act="mute">${Sound.muted ? 'Turn sound on' : 'Turn sound off'}</button>
+        ${!v.local && v.code ? '<button class="btn" data-act="copy">Copy invite link</button>' : ''}
+        ${FC.Voice.on ? '<button class="btn" data-act="voice-leave">Leave voice chat</button>' : ''}
+        <button class="btn primary" data-act="close">Close</button></div>`;
     } else if (m && m.type === 'scores' && v) {
       const rounds = Math.max(0, ...v.players.map(p => p.history.length));
       inner = `<div class="sheet"><h2>Scoreboard</h2><div class="scroll"><table class="scores">
@@ -348,8 +377,12 @@
       ? `<div class="trophy">${won ? '🏆' : '👏'}</div><h2>${won ? 'You win!' : esc(v.players.filter(p => v.winners.includes(p.id)).map(p => p.name).join(' & ')) + ' wins'}</h2>
          <p class="muted">${esc(v.players.filter(p => p.score >= v.limit).map(p => p.name).join(' & '))} reached ${v.limit}.</p>`
       : `<h2>Round ${v.round}</h2>`;
-    const verdict = `<p class="verdict ${r.success ? 'ok' : 'bad'}">${esc(callerP ? callerP.name : r.callerName)} called SHOOK with ${r.callerTotal}
-      ${r.success ? 'and had the lowest hand: 0 points.' : `but someone had ${r.callerTotal === Math.min(...r.rows.filter(x => x.id !== r.caller).map(x => x.total)) ? 'the same' : 'less'}: +${v.penalty}.`}</p>`;
+    const who = esc(callerP ? callerP.name : r.callerName);
+    const verdict = r.outcome === 'win'
+      ? `<p class="verdict ok">${who} called SHOOK with ${r.callerTotal} and had the lowest hand: 0 points.</p>`
+      : r.outcome === 'tie'
+        ? `<p class="verdict tie">${who} called SHOOK with ${r.callerTotal} and tied for lowest, so they add their hand: +${r.callerTotal}.</p>`
+        : `<p class="verdict bad">${who} called SHOOK with ${r.callerTotal} but someone had less: +${v.penalty}.</p>`;
     const rows = r.rows.slice().sort((a, b) => {
       const pa = v.players.find(p => p.id === a.id), pb = v.players.find(p => p.id === b.id);
       return over ? pa.score - pb.score : 0;
@@ -377,10 +410,10 @@
         <li>Card points: Joker 0, Ace 1, 2–9 face value, 10/J/Q/K are 10 each. Suits don’t matter.</li>
         <li>On your turn, play one card, or several cards of the same rank together. Then take one card: from the deck, or the open card left by the previous player.</li>
         <li>Instead of playing, you can call <b>SHOOK</b> when you think your hand is the lowest.</li>
-        <li>If your total is lower than everyone else’s, you score 0 and everyone else scores their hand. If anyone has the same or less, you score 50 and they still score their hands.</li>
+        <li>If your total is lower than everyone else’s, you score 0 and they score their hands. If anyone has less than you, you score 50. If the best other hand is exactly equal to yours, you simply score your own hand total. Everyone else always scores their hand.</li>
         <li>The game ends when someone reaches 100. The lowest total wins.</li>
       </ol>
-      <p class="muted">Tip: cards someone took from the open pile stay face up next to their seat, so you know part of their hand.</p>
+      <p class="muted">Tip: only the open card and the cards players put down are ever face up. Everyone else's hand stays hidden until SHOOK.</p>
       <button class="btn primary" data-act="close">Got it</button></div>`;
   }
 
@@ -418,6 +451,13 @@
   function onView(v) {
     const prev = S.view;
     S.view = v;
+    FC.Voice.sync(v);
+    if (v.phase === 'gameOver' && v.gameId && v.me >= 0) {
+      FC.Stats.record({
+        id: v.gameId, won: (v.winners || []).includes(v.myId), score: v.players[v.me].score,
+        players: v.players.length, mode: v.local ? 'practice' : 'online', rounds: v.round
+      });
+    }
     if (S.screen === 'home' && !S.session) return;
     S.screen = v.phase === 'lobby' ? 'lobby' : 'table';
     if (v.phase === 'lobby') { S.selected.clear(); S.modal = S.modal && S.modal.type === 'gone' ? S.modal : null; }
@@ -477,7 +517,7 @@
 
     setTimeout(() => {
       Sound.draw();
-      const drawnCard = mine ? v.hand.find(c => c.id === ev.drawnId) : ev.drawnPublic;
+      const drawnCard = mine ? v.hand.find(c => c.id === ev.drawnId) : null;   // opponents' draws fly face down
       const to = mine ? rectOf(drawTarget) : shrinkTo(rectOf(drawTarget), pileRect);
       fly(cardHTML(drawnCard || null), pre.src, to, { dur: 480 }).then(() => {
         if (drawTarget) drawTarget.classList.remove('pending');
@@ -489,7 +529,7 @@
     const p = v.players.find(x => x.id === ev.player);
     Sound.shook();
     const splash = document.createElement('div');
-    splash.className = 'splash ' + (ev.success ? 'ok' : 'bad');
+    splash.className = 'splash ' + (ev.outcome === 'win' ? 'ok' : ev.outcome === 'tie' ? 'tie' : 'bad');
     splash.innerHTML = `<span class="word">SHOOK!</span><span class="who">${esc(p ? p.name : '')}</span>`;
     document.body.appendChild(splash);
     setTimeout(() => splash.remove(), 1500);
@@ -557,7 +597,26 @@
       case 'solo': return begin('solo');
       case 'create': return begin('create');
       case 'join': return begin('join');
-      case 'rules': S.modal = { type: 'rules' }; return v && S.session ? render(v) : showRulesHome();
+      case 'rules': S.modal = { type: 'rules' }; return v && S.session ? render(v) : showHomeSheet(rulesHTML());
+      case 'stats': return showHomeSheet(FC.Stats.panelHTML());
+      case 'reset-stats': {
+        if (!confirm('Delete all saved statistics on this device?')) return;
+        FC.Stats.reset();
+        const o = $('.overlay'); if (o) o.innerHTML = FC.Stats.panelHTML();
+        return;
+      }
+      case 'menu': S.modal = { type: 'menu' }; return render(v);
+      case 'voice': {
+        if (!v || v.local || !S.session) return;
+        if (!FC.Voice.on) {
+          FC.Voice.join(S.session).then(() => toast('Voice chat is on. Tap the mic to mute.')).catch(err => toast(err.message, 'bad'));
+        } else {
+          FC.Voice.toggleMute();
+          toast(FC.Voice.muted ? 'Microphone muted.' : 'Microphone on.');
+        }
+        return;
+      }
+      case 'voice-leave': FC.Voice.leave(); S.modal = null; return v ? render(v) : null;
       case 'close': case 'close-bg':
         if (a === 'close-bg' && e.target !== el) return;
         if (S.modal && S.modal.type === 'gone') return;
@@ -608,9 +667,9 @@
       case 'shook-yes': S.modal = null; send({ t: 'shook' }); return;
     }
   }
-  function showRulesHome() {
+  function showHomeSheet(html) {
     const o = document.createElement('div');
-    o.className = 'overlay'; o.dataset.act = 'close-bg'; o.innerHTML = rulesHTML();
+    o.className = 'overlay'; o.dataset.act = 'close-bg'; o.innerHTML = html;
     app.appendChild(o);
   }
 

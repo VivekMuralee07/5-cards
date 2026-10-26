@@ -46,7 +46,8 @@
       this.turn = 0;
       this.starter = -1;
       this.turnCount = 0;
-      this.known = {};       // public knowledge: cards each player took from the open pile
+      this.known = {};       // SERVER/BOT ONLY: cards each player took from the open pile. Never sent to clients.
+      this.gameId = null;
       this.log = [];
       this.evSeq = 0;
       this.lastEv = null;
@@ -90,6 +91,7 @@
       this.round = 0;
       this.winners = null;
       this.log = [];
+      this.gameId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
       this.starter = Math.floor(Math.random() * this.players.length);
       this.startRound(true);
     }
@@ -147,8 +149,8 @@
       this.turnCount++;
       this.emit({
         type: 'play', player: id, cards, source,
-        drawnId: drawn.id, drawnPublic: source === 'discard' ? drawn : null
-      }, `${p.name} played ${cards.map(cardLabel).join(' ')} and took ${source === 'discard' ? cardLabel(drawn) : 'from the deck'}.`);
+        drawnId: drawn.id      // only ever delivered to the player who drew it (see viewFor)
+      }, `${p.name} played ${cards.map(cardLabel).join(' ')} and took ${source === 'discard' ? 'the open card' : 'a card from the deck'}.`);
       this.turn = (this.turn + 1) % this.players.length;
       this.changed();
     }
@@ -161,17 +163,21 @@
       const callerTotal = handTotal(caller.hand);
       const others = this.players.filter((_, i) => i !== pi);
       const minOther = Math.min(...others.map(o => handTotal(o.hand)));
-      // Caller must be strictly lower than every other player; a tie counts as a failed call.
-      const success = callerTotal < minOther;
+      // Someone has less        -> caller scores the penalty (50).
+      // Best tie (nobody less)   -> caller scores their own hand total, like everyone else.
+      // Caller is strictly lowest -> caller scores 0.
+      let outcome = 'win', callerPoints = 0;
+      if (callerTotal > minOther) { outcome = 'caught'; callerPoints = this.penalty; }
+      else if (callerTotal === minOther) { outcome = 'tie'; callerPoints = callerTotal; }
+      const success = outcome === 'win';
       const rows = this.players.map(pl => {
         const total = handTotal(pl.hand);
-        let points = total;
-        if (pl.id === id) points = success ? 0 : this.penalty;
+        const points = pl.id === id ? callerPoints : total;
         pl.score += points;
         pl.history.push(points);
         return { id: pl.id, hand: sortHand(pl.hand), total, points, score: pl.score };
       });
-      this.result = { caller: id, callerName: caller.name, success, callerTotal, rows };
+      this.result = { caller: id, callerName: caller.name, outcome, success, callerTotal, rows };
       const over = this.players.some(pl => pl.score >= this.limit);
       if (over) {
         const best = Math.min(...this.players.map(pl => pl.score));
@@ -180,8 +186,10 @@
       } else {
         this.phase = 'roundEnd';
       }
-      this.emit({ type: 'shook', player: id, success },
-        `${caller.name} called SHOOK with ${callerTotal} points and ${success ? 'won the round' : 'got caught (+' + this.penalty + ')'}.`);
+      const what = outcome === 'win' ? 'had the lowest hand (0 points)'
+        : outcome === 'tie' ? `tied for lowest and scores ${callerTotal}`
+        : `was caught (+${this.penalty})`;
+      this.emit({ type: 'shook', player: id, success, outcome }, `${caller.name} called SHOOK with ${callerTotal} points and ${what}.`);
       this.changed();
     }
 
@@ -199,22 +207,26 @@
       this.changed();
     }
 
+    // What one player is allowed to know. Opponents are only ever a face-down count.
     viewFor(id) {
       const me = this.idx(id);
-      const known = pl => [...(this.known[pl.id] || [])]
-        .map(cid => pl.hand.find(c => c.id === cid)).filter(Boolean);
+      let ev = this.lastEv;
+      if (ev && ev.type === 'play' && ev.player !== id) {
+        ev = Object.assign({}, ev);
+        delete ev.drawnId;          // card ids map to real cards, so an opponent's draw must stay hidden
+      }
       return {
         phase: this.phase, round: this.round, turn: this.turn, starter: this.starter,
-        limit: this.limit, penalty: this.penalty, me,
+        limit: this.limit, penalty: this.penalty, me, gameId: this.gameId,
         players: this.players.map(pl => ({
           id: pl.id, name: pl.name, avatar: pl.avatar, isBot: pl.isBot, difficulty: pl.difficulty,
           takeover: !!pl.takeover, score: pl.score, history: pl.history,
-          handCount: pl.hand.length, connected: pl.connected, known: known(pl)
+          handCount: pl.hand.length, connected: pl.connected, voice: !!pl.voice
         })),
         hand: me >= 0 ? sortHand(this.players[me].hand) : [],
         deckCount: this.deck.length,
         discard: this.discard.slice(-3),
-        evSeq: this.evSeq, lastEv: this.lastEv,
+        evSeq: this.evSeq, lastEv: ev,
         log: this.log.slice(-25),
         result: this.result, winners: this.winners
       };

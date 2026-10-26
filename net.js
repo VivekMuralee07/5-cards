@@ -24,6 +24,8 @@
       this.onView = o.onView;
       this.onError = o.onError || (() => {});
       this.onStatus = o.onStatus || (() => {});
+      this.onSignal = o.onSignal || (() => {});
+      this.iceServers = null;
       this.established = false;
       this.closed = false;
       this.attempt = 0;
@@ -75,10 +77,12 @@
         switch (msg.t) {
           case 'welcome':
             this.myId = msg.id; this.code = msg.code;
+            if (Array.isArray(msg.ice)) this.iceServers = msg.ice;
             if (!this.established) { this.established = true; this._resolve(this); }
             else if (this.lostAt) { this.lostAt = 0; this.onStatus('Back online.'); }
             break;
           case 'state': this.onView(msg.view); break;
+          case 'rtc': this.onSignal(msg.from, msg.data); break;
           case 'error': this.onError(msg.msg, true); break;
           case 'rejected':
             this.closed = true;
